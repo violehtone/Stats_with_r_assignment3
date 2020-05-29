@@ -1,0 +1,580 @@
+---
+title: "Assignment3"
+author: "Ville Lehtonen"
+date: "May 28, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(skimr)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Assignment 3: Predicting protein location
+
+
+### Question 1
+```{r}
+# Read data into a dataframe
+f <- file.path('data', 'ecoli.data')
+ecoli_data <- read.delim(file = f,
+                         comment.char = "#",
+                         header = TRUE,
+                         sep = "\t")
+
+# Inspect if any duplicates are found in the data
+any(duplicated(ecoli_data))
+
+# Create the table of frequencies of different locations
+location_tbl <- as.data.frame(table(ecoli_data$location))
+colnames(location_tbl) <- c("Abbr", "Number")
+location_tbl <- location_tbl[order(-location_tbl$Number), ]
+
+# Inspect data and print a summary of the table
+skimr::skim(ecoli_data)
+
+# Print the location table
+location_tbl %>%
+  knitr::kable(format="html", caption="Table 1: Frequencies of locations for E.Coli") %>% 
+  kableExtra::kable_styling()
+```
+
+
+**Answer to Q1**:  
+  
+ * It seems that no duplicates are found from the data set
+ * The frequencies of locations in the data are shown in Table 1  
+   
+ 
+### Question 2
+```{r}
+# Remove locations with low observations (imL, imS)
+library(dplyr)
+ecoli_data_filtered <- ecoli_data %>% 
+  filter(location != "imL", location != "imS")
+
+# Remove unused locations
+ecoli_data_filtered$location <- factor(ecoli_data_filtered$location)
+
+```
+
+**Answer to Q2:** :  
+  
+  *  In stratified sampling, we aim to ensure that each partition has approximately the same amount of samples of each target class (location)
+    
+  *  4-fold CV was used for the E.Coli data set so the split between training and test data is 75% / 25%. This means that on average for a location to occur at least twice (>= 2) in the stratified training set, it needs to be present at least 3 times in the whole data.
+    
+  *  Based on this, we want to remove the locations 'imL' and 'imS', which both occur only two times in the data set. If we didn't do this, some test sets might have zero observations from these locations  
+
+
+### Question 3
+```{r, message= FALSE, warning= FALSE}
+# Make a pairplot of the filtered data
+library(GGally)
+
+ecoli_pairplot <- ggpairs(data = ecoli_data_filtered %>% select(-location, -SpAccNr),
+                          title = "Figure 1: Pairplot for E.Coli prediction features",
+                          lower = list(continuous = wrap("points", size = 0.1)))
+
+print(ecoli_pairplot)
+
+# Remove chg as it has no predictive power
+ecoli_data_filtered <- ecoli_data_filtered %>% 
+  select(-chg)
+
+# Make a new pairplot
+ecoli_pairplot2 <- ggpairs(data = ecoli_data_filtered %>% select(-location, -SpAccNr),
+                          title = "Figure 2: Pairplot for E.Coli prediction features ('chg' removed)",
+                          lower = list(continuous = wrap("points", size = 0.1)))
+
+print(ecoli_pairplot2)
+```
+
+**Answer to Q3:**  
+   
+ * Above are shown 2 pairplots. The first one is one with all the predictor features included and the latter one is a one where 'chg' feature is left out as it doesn't have any predictive power due to having a constant value in every sample.
+ 
+  
+Findings:
+
+ * Based on the results of the pairplot, it seems that some features are highly or somewhat correlated. For instance, alm1 and alm2 are highly positively correlated with each other (Corr: 0.809). Ncg and gvg also have somewhat high correlation (0.46) as well as alm1 and mcg (0.396). In addition, many features show slight correlations with each other.
+ 
+ * Multicollinearity of features will be a problem especially for KNN and Naive Bayes algorithms and this can lead to misleading results. Random forest, which builds an ensemble of decision trees, should be immune to this problem as in each split the decision are made so that only one of the correlated features is selected.
+ 
+ * chg produces only NAs in the original pairplot since it has a constant value and thus no predictive power.
+  
+   
+Actions to be taken:
+  
+  *  To deal with the correlation of features, we would usually do either dimension reduction (PCA) or feature selection. In this case, as the number of features is already rather small, feature selection is a suitable approach.
+  
+  * Next, we'll calculate the VIF (variance inflation factor) for each feature to score the correlation between features and to determine which features could be removed from the set of predictor features.  
+  
+  
+**Feature selection:**
+```{r}
+library(car)
+# Prepare data for feature selection
+d <- ecoli_data_filtered %>% select(-SpAccNr)
+d$location <- as.numeric(d$location)
+
+# Fit a model and inspect aliases in the linear model
+lm.fit <- lm(location ~ ., data = d)
+vif_scores <- vif(lm.fit)
+print(vif_scores)
+
+# As it seems that alm1 is highly correlated with alm2 and has highest VIF score, it can be filtered out from the predictor features
+ecoli_data_filtered <- ecoli_data_filtered %>% 
+  select(-alm1)
+
+# Fit a new model
+d <- ecoli_data_filtered %>% select(-SpAccNr)
+d$location <- as.numeric(d$location)
+lm.fit <- lm(location ~ ., data = d)
+vif_scores <- vif(lm.fit)
+print(vif_scores)
+#-> VIF scores seems to be fine
+
+# print summary of the model to see p-values
+print(summary(lm.fit))
+
+# Make a new pairplot
+ecoli_pairplot3 <- ggpairs(data = ecoli_data_filtered %>% select(-location, -SpAccNr),
+                          title = "Figure 3: Pairplot for E.Coli prediction features ('chg' and 'alm1' removed)",
+                          lower = list(continuous = wrap("points", size = 0.1)))
+
+print(ecoli_pairplot3)
+
+```
+
+**Answer to Q3 (cont.):**
+  
+  * VIF (variance inflation factor) quantifies the extent of correlation between one predictor and the other predictors in a model. It is used for diagnosing multicollinearity.
+  
+  * As it seems that 'alm1' is highly correlated with alm2 and it has the highest VIF value (4.02), it could be removed from the predictor features as it doesn't add too much additional information in this sense. 
+
+  * 'lip' feature had only two possible values in the data and it seems that 97% of the time it is the other one, so one could assume it to not have a significant prediction power. However, on predicting the location it had a p-value of ~0.03 so I thought that it could be included in the models as a predictor variable.
+
+  * **Summary of changes made: 'chg' and 'alm1' features were removed from the E.Coli data set.**  
+
+  
+    
+### Question 4
+```{r}
+# Get required libraries
+library(class)
+library("e1071")
+library(randomForest)
+library(tibble)
+
+# source the partition function
+fpart <- file.path("script", "partition_function.R")
+source(fpart)
+
+#################################################
+#UTILITY FUNCTIONS USED IN THIS SCRIPT
+#################################################
+
+# Function to create a nested list
+create_nested_list <- function(names, list_length){
+  result <- lapply(names,
+                   function(i){vector(mode = "list", length = list_length)})
+  names(result) <- names
+  return(result)
+}
+#################################################
+# Set seed to produce constant results
+set.seed(42)
+
+# Perform stratified sampling
+plabel <- partition(4, ecoli_data_filtered$location)
+
+# Add the fold information to the filtered Ecoli data
+ecoli_data_folds <- ecoli_data_filtered %>% 
+  mutate(fold = plabel)
+
+# Create lists to store the results of the CV
+names_of_models <- c("KNN",'NaiveBayes','RF') # Names of the models used
+list_of_models <- create_nested_list(names_of_models, 4) # list to store models
+list_of_pred <- create_nested_list(names_of_models, 4) # list to store predictions
+list_of_prediction_scores <- create_nested_list(names_of_models, 4)  # list to store pred. scores
+
+# 4-fold CV using stratified training and test sets
+for(i in 1:4) {
+  testset <- ecoli_data_folds %>% filter(fold == i) %>% select(-fold, -SpAccNr)
+  trainset <- ecoli_data_folds %>% filter(fold != i) %>% select(-fold, -SpAccNr)
+  
+  #KNN
+  knn_pred = knn(train = trainset[, -length(trainset)],
+                  test = testset[, -length(trainset)],
+                  cl = trainset[["location"]],
+                  k = 7)
+  correct_knn <- sum(knn_pred == as.character(testset[["location"]])) / dim(testset)[1]
+
+  # Naive bayes
+  nb <- naiveBayes(location ~ ., data = trainset)
+  nb_pred <- predict(nb, testset)
+  correct_nb <- sum(nb_pred == as.character(testset[["location"]])) / dim(testset)[1]
+  
+  # Random Forest
+  rf <- randomForest(location ~ ., data = trainset)
+  rf_pred <- as.factor(as.vector(predict(rf, testset)))
+  correct_rf <- sum(rf_pred == as.character(testset[["location"]])) / dim(testset)[1]
+  
+  
+  # Store the results
+  list_of_pred[["KNN"]][[i]] <- knn_pred
+  list_of_prediction_scores[["KNN"]][[i]] <- correct_knn
+  
+  list_of_models[["NaiveBayes"]][[i]] <- nb
+  list_of_pred[["NaiveBayes"]][[i]] <- nb_pred
+  list_of_prediction_scores[["NaiveBayes"]][[i]] <- correct_nb
+  
+  list_of_models[["RF"]][[i]] <- rf
+  list_of_pred[["RF"]][[i]] <- rf_pred
+  list_of_prediction_scores[["RF"]][[i]] <- correct_rf
+}
+
+# Create the table of accuracies
+list_of_accuracy_tables = create_nested_list(names_of_models, 1) # list to store models
+
+for (method in names(list_of_prediction_scores)) {
+  accuracy_tbl <- list_of_prediction_scores[[method]] %>% 
+    as.data.frame() %>% 
+    t() %>% 
+    as_tibble() %>% 
+    rownames_to_column(var = "Partition") %>% 
+    rename("Accuracy" = "V1")
+  
+  list_of_accuracy_tables[[method]] <- accuracy_tbl
+}
+
+# Create a table of all the partition (1-4) results
+result_tbl <- data.frame(
+  Partition = c(1:4),
+  KNN = list_of_accuracy_tables[["KNN"]]$Accuracy,
+  NaiveBayes = list_of_accuracy_tables[["NaiveBayes"]]$Accuracy,
+  RF = list_of_accuracy_tables[["RF"]]$Accuracy
+)
+
+# Create the table of means & std. devs for each method
+means <- data.frame("mean", mean(result_tbl$KNN), mean(result_tbl$NaiveBayes), mean(result_tbl$RF))
+names(means) <- c("Partition", "KNN", "NaiveBayes", "RF")
+
+std.devs <- data.frame("std.dev.", sd(result_tbl$KNN), sd(result_tbl$NaiveBayes), sd(result_tbl$RF))
+names(std.devs) <- c("Partition", "KNN", "NaiveBayes", "RF")
+
+result_tbl.mean <- rbind(result_tbl, means)
+result_tbl.mean.sd <- rbind(result_tbl.mean, std.devs)
+
+# Print the final output table
+result_tbl.mean.sd %>%
+  knitr::kable(format="html", caption="Table 2: E.Coli data - Results of CV shown in accuracy, including the means and standard deviations") %>% 
+  kableExtra::kable_styling()
+
+```
+
+**Answer to Q4**:  
+  
+  * According to the results shown in Table 2, RF seems to have the highest mean accuracy (~86%), KNN being a close second with ~85.5% and Naive Bayes has the lowest accuracy of ~83%
+  
+  * KNN  has the highest standard deviation (~0.03) and its worst accuracy score is ~80% as compared to the worst scores of Naive Bayes and RF, which were ~79% and ~85% respectively.  
+  
+
+
+### Question 5
+```{r}
+set.seed(42)
+
+t.knn.nb <- t.test(result_tbl$KNN, result_tbl$NaiveBayes, paired = TRUE)
+t.knn.rf <- t.test(result_tbl$KNN, result_tbl$RF, paired = TRUE)
+t.nb.rf <- t.test(result_tbl$NaiveBayes, result_tbl$RF, paired = TRUE)
+
+t.test.table <- data.frame(
+  KNN = c(NA, t.knn.nb$p.value, t.knn.rf$p.value),
+  NaiveBayes = c(t.knn.nb$p.value, NA, t.nb.rf$p.value),
+  RF = c(t.knn.rf$p.value, t.nb.rf$p.value, NA)
+)
+
+rownames(t.test.table) <- c("KNN", "NaiveBayes", "RF")
+
+# Print the table of t-tests
+t.test.table %>%
+  knitr::kable(format="html", caption="Table 3: T-tests for each method (E.Coli)") %>% 
+  kableExtra::kable_styling()
+
+```
+
+**Answer to Q5:**  
+  
+  * As can be seen from the Table 3, when using a p-value cutoff of 0.05, it seems that the difference between KNN and RF is not significant.
+  
+  * However, the difference between KNN and Naive bayes (p = ~0.04) is considered to be significant. The difference between RF and Naive Bayes (0.08) would in this case be considered as non-signifcant.
+  
+  
+### Question 6
+```{r}
+f2 <- file.path('data', 'yeast.data')
+yeast_data <- read.delim(file = f2,
+                         comment.char = "#",
+                         header = TRUE,
+                         sep = "\t")
+
+# Inspect if any duplicates exist
+any(duplicated(yeast_data))
+rows <- dim(yeast_data)[1]
+
+# Remove duplicates
+yeast_data <- yeast_data[!duplicated(yeast_data), ]
+duplicate_rows <- rows - dim(yeast_data)[1]
+print(paste0("Amount of duplicates removed: ", duplicate_rows))
+
+# Create the table of frequencies of different locations
+location_tbl2 <- as.data.frame(table(yeast_data$location))
+colnames(location_tbl2) <- c("Abbr", "Number")
+location_tbl2 <- location_tbl2[order(-location_tbl2$Number), ]
+
+# Inspect data and print a summary of the table
+skimr::skim(yeast_data)
+
+# Print the location table
+location_tbl2 %>%
+  knitr::kable(format="html", caption="Table 4: Frequencies of locations for yeast data") %>% 
+  kableExtra::kable_styling()
+```
+
+**Answer to Q6:**  
+  
+  * 10-fold CV was used for the yeast data set so the cutoff for locations with low observations is again set at 3 (with a train/test split of 90/10).
+  
+  * As 'erl' is the location with the lowest observations (5), there is no need to filter any of the locations from the data.  
+
+
+
+### Question 7
+```{r}
+# Make a pairplot of the yeast data
+library(GGally)
+library(car)
+
+# Pairplot
+yeast_pairplot <- ggpairs(data = yeast_data %>% select(-SpAccNr, -location),
+                          title = "Figure 4: Pairplot for yeast prediction features",
+                          lower = list(continuous = wrap("points", size = 0.1)))
+
+print(yeast_pairplot)
+
+# fit a model to inspect vif scores
+d <- yeast_data %>% select(-SpAccNr)
+d$location <- as.numeric(d$location)
+lm.fit <- lm(location ~., data = d)
+vif_scores <- vif(lm.fit)
+print(vif_scores)
+#-> None of the vif scores is too high
+
+print(summary(lm.fit))
+
+# The erf and pox features don't seem to carry too much information
+yeast_data <- yeast_data %>% select(-erl, -pox)
+
+# Calculate new vif scores
+d <- yeast_data %>% select(-SpAccNr)
+d$location <- as.numeric(d$location)
+lm.fit <- lm(location ~., data = d)
+vif_scores <- vif(lm.fit)
+print(vif_scores)
+
+# Make a new pairplot
+yeast_pairplot2 <- ggpairs(data = yeast_data %>% select(-SpAccNr, -location),
+                          title = "Figure 5: Pairplot for yeast prediction features (erl and pox excluded)",
+                          lower = list(continuous = wrap("points", size = 0.1)))
+
+print(yeast_pairplot2)
+```
+
+**Answer to Q7:**
+    
+  * Two pairplots (Figure 4 and 5) are shown above. Figure 4 shows the pairplots with all features included and Figure 5 without the 'erl' and 'pox' features.   
+    
+  * When looking at the pairsplot, one can see that some features show correlation with each other, i.e. mcg and gvh (corr: 0.583).
+  
+  * However, after calculating the VIF scores to see if the problem of multicollinearity is present in the data, it seems that none of the features is too correlated with each other and 'mcg' had the highest vif score of ~1.55
+  
+  * It also seems that pox and erf contain only small amount of different values, so I decided to filter them out from the dataset as they didn't seem too affect the overall performance of the models in a positive way.  
+  
+   
+   
+### Question 8
+```{r}
+# Get required libraries
+library(class)
+library("e1071")
+library(randomForest)
+library(tibble)
+
+# source the partition function
+fpart <- file.path("script", "partition_function.R")
+source(fpart)
+
+#################################################
+#UTILITY FUNCTIONS USED IN THIS SCRIPT
+#################################################
+
+# Function to create a nested list
+create_nested_list <- function(names, list_length){
+  result <- lapply(names,
+                   function(i){vector(mode = "list", length = list_length)})
+  names(result) <- names
+  return(result)
+}
+#################################################
+# Set seed to produce constant results
+set.seed(42)
+
+# Perform stratified sampling
+plabel_yeast <- partition(10, yeast_data$location)
+
+# Add the fold information to the filtered Ecoli data
+yeast_data_folds <- yeast_data %>% 
+  mutate(fold = plabel_yeast)
+
+# Create lists to store the results of the CV
+names_of_models <- c("KNN",'NaiveBayes','RF') # Names of the models used
+list_of_prediction_scores <- create_nested_list(names_of_models, 10)  # list to store pred. scores
+
+# 4-fold CV using stratified training and test sets
+for(i in 1:10) {
+  testset <- yeast_data_folds %>% filter(fold == i) %>% select(-fold, -SpAccNr)
+  trainset <- yeast_data_folds %>% filter(fold != i) %>% select(-fold, -SpAccNr)
+  
+  #KNN
+  knn_pred = knn(train = trainset[, -length(trainset)],
+                  test = testset[, -length(trainset)],
+                  cl = trainset[["location"]],
+                  k = 21)
+  correct_knn <- sum(knn_pred == as.character(testset[["location"]])) / dim(testset)[1]
+
+  # Naive bayes
+  nb <- naiveBayes(location ~ ., data = trainset)
+  nb_pred <- predict(nb, testset)
+  correct_nb <- sum(nb_pred == as.character(testset[["location"]])) / dim(testset)[1]
+  
+  # Random Forest
+  rf <- randomForest(location ~ ., data = trainset)
+  rf_pred <- as.factor(as.vector(predict(rf, testset)))
+  correct_rf <- sum(rf_pred == as.character(testset[["location"]])) / dim(testset)[1]
+  
+  
+  # Store the results
+  list_of_prediction_scores[["KNN"]][[i]] <- correct_knn
+  list_of_prediction_scores[["NaiveBayes"]][[i]] <- correct_nb
+  list_of_prediction_scores[["RF"]][[i]] <- correct_rf
+}
+
+# Create the table of accuracies
+list_of_accuracy_tables = create_nested_list(names_of_models, 1) # list to store models
+
+for (method in names(list_of_prediction_scores)) {
+  accuracy_tbl <- list_of_prediction_scores[[method]] %>% 
+    as.data.frame() %>% 
+    t() %>% 
+    as_tibble() %>% 
+    rownames_to_column(var = "Partition") %>% 
+    rename("Accuracy" = "V1")
+  
+  list_of_accuracy_tables[[method]] <- accuracy_tbl
+}
+
+# Create a table of all the partition (1-4) results
+result_tbl <- data.frame(
+  Partition = c(1:10),
+  KNN = list_of_accuracy_tables[["KNN"]]$Accuracy,
+  NaiveBayes = list_of_accuracy_tables[["NaiveBayes"]]$Accuracy,
+  RF = list_of_accuracy_tables[["RF"]]$Accuracy
+)
+
+# Create the table of means & std. devs for each method
+means <- data.frame("mean", mean(result_tbl$KNN), mean(result_tbl$NaiveBayes), mean(result_tbl$RF))
+names(means) <- c("Partition", "KNN", "NaiveBayes", "RF")
+
+std.devs <- data.frame("std.dev.", sd(result_tbl$KNN), sd(result_tbl$NaiveBayes), sd(result_tbl$RF))
+names(std.devs) <- c("Partition", "KNN", "NaiveBayes", "RF")
+
+result_tbl.mean <- rbind(result_tbl, means)
+result_tbl.mean.sd <- rbind(result_tbl.mean, std.devs)
+
+# Print the final output table
+result_tbl.mean.sd %>%
+  knitr::kable(format="html", caption="Table 5: Yeast data - Results of CV shown in accuracy, including the means and standard deviations") %>% 
+  kableExtra::kable_styling()
+```
+
+**Answer to Q8:**
+  
+  * All models seem to perform quite similarly, although RF has the highest avg. accuracy of 0.60
+  * The std. deviation is also rather similar between the models but KNN has the highest std. dev
+  * The single best prediction accuracy was obtained by KNN at partition 7 (accuracy = 0.67)  
+
+
+### Question 9
+```{r}
+set.seed(42)
+t.knn.nb <- t.test(result_tbl$KNN, result_tbl$NaiveBayes, paired = TRUE)
+t.knn.rf <- t.test(result_tbl$KNN, result_tbl$RF, paired = TRUE)
+t.nb.rf <- t.test(result_tbl$NaiveBayes, result_tbl$RF, paired = TRUE)
+
+t.test.table <- data.frame(
+  KNN = c(NA, t.knn.nb$p.value, t.knn.rf$p.value),
+  NaiveBayes = c(t.knn.nb$p.value, NA, t.nb.rf$p.value),
+  RF = c(t.knn.rf$p.value, t.nb.rf$p.value, NA)
+)
+
+rownames(t.test.table) <- c("KNN", "NaiveBayes", "RF")
+
+# Print the table of t-tests
+t.test.table %>% knitr::kable(format="html", caption="Table 6: T-tests for each method (Yeast data)") %>% kableExtra::kable_styling()
+```
+
+
+**Answer to Q9: **:
+  
+  * When looking at the p-values (and again using a cutoff of < 0.05), it seems that only Naive Bayes seems to produce results that are significantly different from RF and KNN. RF and KNN again produce very similar results so they are not significantly different from each other in terms of accuracy. 
+
+
+### Question 10
+```{r}
+library(tidyverse)
+p <- ggplot(data = yeast_data,
+            mapping = aes(x = mcg,
+                          y = gvh)) +
+  geom_point() +
+  stat_smooth(method = lm, se = F, colour = 'red') +
+  labs(title = "Figure 6: mcg vs. gvh - correlation of features", x = "mcg", y = "gvh")
+
+
+print(p)
+```
+  
+  
+**Answer to Q10: **:
+  
+  * Naive Bayes is called 'naive' because it makes the assumption that all the features have zero correlation with each other.
+  
+  * In reality, As can be seen from the pairplot (in question 7), some features (i.e. mcg and gvh) are somewhat correlated. So all pairs of predictors aren't really conditionally independent.
+  
+  * The plot above (Figure 6) shows the linear relationship of mcg and gvh variables in the yeast data.  
+  
+  
+### Question 11
+
+**Answer to Q11:**  
+  
+ * Probabilistic classification methods are able to produce a probability distribution over all possible class labels. For example Naive Bayes, decision trees, and random forests are able to produce this type of output.
+ 
+ * KNN, on the other hand, cannot handle the number of neighbours probabilistically and so it is not able to produce this kind of output.
+ 
+ * To produce a probability distribution over class labels for the NaiveBayes, the argument type = "raw" should be provided to the model
+ 
+ * To produce this for random forest, simply set the argument norm.votes = FALSE (= raw vote counts)  
+ 
+
